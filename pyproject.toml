@@ -1,0 +1,12 @@
+# pyproject.toml
+[project]
+name = "walker2d"
+version = "0.1.0"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.entry-points."dagger.mod"]
+main = "walker2d:Walker2D"
