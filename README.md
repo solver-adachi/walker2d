@@ -15,21 +15,16 @@ curl -fsSL https://dl.dagger.io/dagger/install.sh | sh
 
 ## 学習 (Training)
 
-50万ステップ学習して `runs_w2d_dagger/` に保存:
+ステップ学習して `runs_w2d_dagger/` に保存:
 
 ```bash
-dagger call -m . train \
-  --source . \
-  --total-steps 2000000 \
-  export --path ./artifacts/runs_w2d_dagger
-```
-
 dagger call -m . train \
   --source . \
   --total-steps 20000000 \
   --seed 42 \
   --logdir artifacts/runs_w2d_dagger \
   export --path ./artifacts/runs_w2d_dagger
+```
 
 出力:
 
@@ -50,23 +45,6 @@ dagger call -m . enjoy \
   --record out.mp4 \
   export --path ./artifacts/out.mp4
 ```
-
-
-dagger call -m . enjoy \
-  --source . \
-  --logdir artifacts/runs_w2d_dagger \
-  --vecnorm artifacts/runs_w2d_dagger/vecnormalize.pkl \
-  --episodes 3 --det --nudge --mu 0.5 --sleep 0.01 \
-  --record out.mp4 \
-  export --path ./artifacts/out.mp4
-
-dagger call -m . enjoy \
-  --source . \
-  --logdir artifacts/runs_w2d_dagger \
-  --vecnorm artifacts/runs_w2d_dagger/vecnormalize.pkl \
-  --episodes 3 --det --sleep 0.01 \
-  --record out.mp4 \
-  export --path ./artifacts/out.mp4
 
 出力:
 `./artifacts/out.mp4` に歩行動画が保存されます
@@ -94,8 +72,8 @@ walker2d/
  ├─ dagger.json                # Daggerモジュール定義
  ├─ src/walker2d/__init__.py
  ├─ src/walker2d/mod_impl.py   # train/enjoy 実装
- ├─ sb3_train_walker2d_clean.py
- ├─ sb3_enjoy_walker2d_friction2.py
+ ├─ sb3_train_walker2d.py
+ ├─ sb3_enjoy_walker2d.py
  └─ artifacts/                 # 出力 (動画, 学習成果物)
 ```
 
