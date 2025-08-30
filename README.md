@@ -9,8 +9,7 @@ Docker を直接触らなくても、Dagger のモジュールとして再現可
 依存は Dagger だけでOKです。
 
 ```bash
-# dagger CLI のインストール
-curl -fsSL https://dl.dagger.io/dagger/install.sh | sh
+curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin sh
 ```
 
 ## 学習 (Training)
