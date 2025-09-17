@@ -2,7 +2,7 @@
 [project]
 name = "walker2d"
 version = "0.1.0"
-dependencies = []
+dependencies = ["numpy"]
 
 [build-system]
 requires = ["hatchling"]

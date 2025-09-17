@@ -32,6 +32,8 @@ def load_env(vecnorm_path: str, render: bool, record: bool):
         venv.training = False
         venv.norm_reward = False
         print(f"[INFO] VecNormalize loaded: {vecnorm_path}")
+        print("[diag] obs_rms.mean[:5]=", venv.obs_rms.mean[:5])
+        print("[diag] obs_rms.var[:5] =", venv.obs_rms.var[:5])
         return venv, True
     else:
         print("[WARN] VecNormalize not used")
@@ -136,7 +138,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--logdir", type=str, default="runs_walker2d")
     ap.add_argument("--model", type=str, default=None)
-    ap.add_argument("--vecnorm", type=str, default=None)
+    ap.add_argument("--vecnorm", type=str, default="runs_walker2d/vecnormalize.pkl")
     ap.add_argument("--episodes", type=int, default=1)
     ap.add_argument("--max-steps", type=int, default=2000)
     ap.add_argument("--det", action="store_true")
@@ -147,6 +149,9 @@ def main():
     ap.add_argument("--record", type=str, default=None)
     ap.add_argument("--fps", type=int, default=166)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--warmup", type=int, default=0, help="first N steps use stochastic actions")
+    ap.add_argument("--grace", type=int, default=0,
+                help="steps数以内で転倒したらリトライする")
     args = ap.parse_args()
 
     # seeds
@@ -181,58 +186,88 @@ def main():
     if args.nudge:
         nudge_once(env, force=40.0)
 
+    try:
+        rms = getattr(env, "obs_rms", None)
+        if rms is not None:
+            print("[diag] obs_rms.shape", rms.mean.shape)
+            print("[diag] mean[:8] =", np.round(rms.mean[:8], 4))
+            print("[diag] var [:8] =", np.round(rms.var[:8], 6))
+    except Exception as e:
+        print("[diag] obs_rms dump failed:", e)
+
+
     # モデル
-    model_path = args.model or os.path.join(args.logdir, "best_model.zip")
-    if not os.path.exists(model_path):
-        alt = os.path.join(args.logdir, "ppo_walker2d_sb3.zip")
-        if os.path.exists(alt): model_path = alt
+    cands = [
+        args.model,
+        os.path.join(args.logdir, "last_model.zip"),
+        os.path.join(args.logdir, "best_model.zip"),
+        os.path.join(args.logdir, "ppo_walker2d_sb3.zip"),
+    ]
+    model_path = next((p for p in cands if p and os.path.exists(p)), None)
+    assert model_path, f"no model file found under {args.logdir}"
     print(f"[INFO] loading model: {model_path}")
     model = PPO.load(model_path)
 
     # writer 準備
     writer = None
     if recording:
-        fps = max(1, min(240, (args.fps if args.fps > 0 else (int(1/args.sleep) if args.sleep > 0 else 30))))
+        #fps = max(1, min(240, (args.fps if args.fps > 0 else (int(1/args.sleep) if args.sleep > 0 else 30))))
+        fps = 30 if args.fps is None else args.fps
         writer = imageio.get_writer(args.record, fps=fps)
 
     # 本編
-    for ep in range(1, args.episodes + 1):
-        ret, steps, done = 0.0, 0, False
-        while not done and steps < args.max_steps:
-            action, _ = model.predict(obs, deterministic=args.det)
-            obs, r, done = step_compat(env, action, is_vec)
-            ret += r; steps += 1
-
-            if recording:
-                frame = grab_frame(env)
-                if frame is not None:
-                    f = np.asarray(frame)
-                    if f.dtype != np.uint8:
-                        f = (np.clip(f, 0, 1) * 255).astype(np.uint8)
-                    writer.append_data(f)
-
-            if render and args.sleep > 0:
-                time.sleep(args.sleep)
-
-        print(f"[EP DONE] ep={ep}/{args.episodes} return={ret:.1f} steps={steps}")
-
-        if ep < args.episodes:
-            obs = reset_obs(env, is_vec)
-            friction_patch(env, mu=args.mu)
-            if args.nudge:
-                nudge_once(env, force=40.0)
-
-    if writer is not None:
-        writer.close()
-        print(f"[REC] video saved to {args.record}")
-
     try:
-        env.close()
-        base = _unwrap_base_env(env)
-        bc = _find_bullet_client(base)
-        if bc: p.disconnect(physicsClientId=getattr(bc, "_client", None))
-    except Exception:
-        pass
+        for ep in range(1, args.episodes + 1):
+            ret, steps, done = 0.0, 0, False
+            while not done and steps < args.max_steps:
+                det_now = args.det
+                if args.warmup and steps < args.warmup:
+                    det_now = False
+                action, _ = model.predict(obs, deterministic=det_now)
+
+                obs, r, done = step_compat(env, action, is_vec)
+                ret += r; steps += 1
+
+                if recording:
+                    frame = grab_frame(env)
+                    if frame is not None:
+                        f = np.asarray(frame)
+                        if f.dtype != np.uint8:
+                            f = (np.clip(f, 0, 1) * 255).astype(np.uint8)
+                        writer.append_data(f)
+
+                if render and args.sleep > 0:
+                    time.sleep(args.sleep)
+
+            # ★ graceチェック
+            if args.grace > 0 and steps < args.grace:
+                print(f"[GRACE RETRY] ep={ep}: early stop at {steps} steps, retrying…")
+                obs = reset_obs(env, is_vec)
+                friction_patch(env, mu=args.mu)
+                if args.nudge:
+                    nudge_once(env, force=40.0)
+                ep -= 1  # カウントし直し
+                continue
+    
+            print(f"[EP DONE] ep={ep}/{args.episodes} return={ret:.1f} steps={steps}")
+
+            if ep < args.episodes:
+                obs = reset_obs(env, is_vec)
+                friction_patch(env, mu=args.mu)
+                if args.nudge:
+                    nudge_once(env, force=40.0)
+    finally:
+        if writer is not None:
+            writer.close()
+            print(f"[REC] video saved to {args.record}")
+
+        try:
+            env.close()
+            base = _unwrap_base_env(env)
+            bc = _find_bullet_client(base)
+            if bc: p.disconnect(physicsClientId=getattr(bc, "_client", None))
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

@@ -12,7 +12,7 @@ APT = [
     "libosmesa6",      # ← 追加（保険：OSMesa ソフトレンダ）
 ]
 PIP = [
-    "numpy==1.26.4",
+    "numpy<2",
     "gymnasium==0.29.1",
     "pybullet==3.2.6",
     "pybullet_envs_gymnasium==0.6.0",
@@ -20,9 +20,6 @@ PIP = [
     "imageio==2.37.0",
     "imageio-ffmpeg==0.4.9",
     "tensorboard==2.17.1",
-    # tqdm/richは extras に含まれるが念のため
-    "tqdm==4.66.4",
-    "rich==13.7.1",
 ]
 
 @object_type
@@ -76,14 +73,20 @@ class Walker2D:
         vecnorm: str = "runs_w2d_dagger/vecnormalize.pkl",
     ) -> File:
         ctr = self._base(source)
-
+        ctr = ctr.with_exec([
+            "bash","-lc",
+            f"mkdir -p {logdir}/videos; "  # 既存
+            f"mkdir -p $(dirname {record})"  # ← これを追加
+        ])
         # モデル / VecNorm の存在チェック（無ければ明示エラーにする）
         check = (
             "set -e; "
             f"echo '[ls] {logdir}:'; ls -l {logdir} || true; "
             f"test -f {vecnorm} && echo '[check] vecnorm: OK' || (echo '[check] vecnorm: MISSING' && exit 2); "
             "echo -n '[check] model: '; "
-            f"if   [ -f {logdir}/best_model.zip ]; then echo {logdir}/best_model.zip; "
+            f"if   [ -f {logdir}/last_model.zip ]; then echo {logdir}/last_model.zip; "
+            f"elif [ -f {logdir}/best_model.zip ]; then echo {logdir}/best_model.zip; "
+            f"elif [ -f {logdir}/eval/best_model.zip ]; then echo {logdir}/eval/best_model.zip; "
             f"elif [ -f {logdir}/ppo_walker2d_sb3.zip ]; then echo {logdir}/ppo_walker2d_sb3.zip; "
             "else echo MISSING && exit 3; fi"
         )
@@ -101,12 +104,10 @@ class Walker2D:
             "python", "sb3_enjoy_walker2d.py",
             "--logdir", logdir,
             "--vecnorm", vecnorm,
-            "--episodes", str(episodes),
-            "--sleep", str(sleep),
         ]
         # mu は指定があるときだけ渡す（デフォルトでは渡さない）
         if mu is not None:
-            args += ["--mu", str(mu)]
+           args += ["--mu", str(mu)]
         if det:       args.append("--det")
         if nudge:     args.append("--nudge")
         if no_render: args.append("--no-render")
@@ -114,10 +115,6 @@ class Walker2D:
 
         # ログ出し & 実行
         run = " ".join(args)
-        # ctr = ctr.with_exec(["bash","-lc", f"printf '[run] %q ' xvfb-run -a {run}; echo"])
-        # ctr = ctr.with_exec(["bash","-lc", f"PYBULLET_EGL=0 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a {run}"])
-        # ctr = ctr.with_exec(["bash","-lc", "printf '[run] %q ' " + " ".join(args) + "; echo"])
-        # ctr = ctr.with_exec(args)
         ctr = ctr.with_exec([
             "bash","-lc",
             f"printf '[run] %q ' xvfb-run -s \"-screen 0 1280x720x24\" -a {run}; echo"
@@ -136,10 +133,29 @@ class Walker2D:
         total_steps: int = 2_000_000,
         logdir: str = "artifacts/runs_w2d_dagger",
         seed: int = 42,
+        n_envs: int = 1,
+        resume: int = 1,  # 追加：0=新規/上書きなし, 1=続き学習
     ) -> Directory:
         ctr = self._base(source)
+        
+        # ログディレクトリ準備（resume=0なら中身を空にしてから）
+        if resume == 0:
+            ctr = ctr.with_exec(["bash","-lc", f"rm -rf {logdir} && mkdir -p {logdir}"])
+        else:
+            ctr = ctr.with_exec(["bash","-lc", f"mkdir -p {logdir}"])
+        
         ctr = ctr.with_exec(["bash","-lc","mkdir -p " + logdir])
-        # 進捗バーやTBは extras 済み。実行前にtorch deterministic化
+        print("CMD:", [
+            "python","-u","sb3_train_walker2d.py",
+            "--total-steps", str(total_steps),
+            "--logdir", logdir,
+            "--seed", str(seed),
+            "--n-envs", str(n_envs),
+            "--eval-every","50000",
+            "--save-every","100000",
+            "--no-render",
+            ] + (["--resume"] if resume else []))
+            # 進捗バーやTBは extras 済み。実行前にtorch deterministic化
         ctr = ctr.with_exec(["bash","-lc",
             "python - <<'PY'\n"
             "import torch\n"
@@ -147,16 +163,18 @@ class Walker2D:
             "print('[diag] torch deterministic ON')\n"
             "PY"])
         # 学習
-        cmd = (
-            "python -u sb3_train_walker2d.py "
-            f"--total-steps {total_steps} "
-            f"--logdir {logdir} "
-            "--eval-every 50000 --save-every 100000 "
-            f"--seed {seed} --no-render"
-        )
-        ctr = ctr.with_exec(["bash","-lc", cmd])
-        # ハッシュ出力
-        ctr = ctr.with_exec(["bash","-lc",
-        f"sha256sum {logdir}/best_model.zip || true; "
-        f"sha256sum {logdir}/vecnormalize.pkl || true"])
+        args = [
+            "python","-u","/app/sb3_train_walker2d.py",
+            "--total-steps", str(total_steps),
+            "--logdir", logdir,
+            "--seed", str(seed),
+            "--n-envs", str(n_envs),
+            "--eval-every","50000",
+            "--save-every","100000",
+            "--no-render",
+        ]
+        if resume:          # ← Dagger側の bool/int を判定
+            args.append("--resume")   # ← 値なし（store_true）
+
+        ctr = ctr.with_exec(args)
         return ctr.directory(f"{WORKDIR}/{logdir}")
